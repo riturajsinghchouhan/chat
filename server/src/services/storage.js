@@ -23,11 +23,15 @@ const FILE_MIME = new Set([
   'application/vnd.openxmlformats-officedocument.presentationml.presentation',
 ]);
 
+// Short video clips ("snaps"). Uploaded in chunks, streamed back with HTTP Range requests.
+export const VIDEO_MIME = new Set(['video/mp4', 'video/webm', 'video/quicktime']);
+
 // Plain-text formats have no magic bytes; accepted only by extension + binary check.
 const TEXT_EXT = { '.txt': 'text/plain', '.csv': 'text/csv', '.md': 'text/markdown' };
 
 const bucket = () => new mongoose.mongo.GridFSBucket(mongoose.connection.db, { bucketName: 'media' });
 const filesCollection = () => mongoose.connection.db.collection('media.files');
+const chunksCollection = () => mongoose.connection.db.collection('media.chunks');
 
 export const mediaUrl = (id) => `/api/media/${id}`;
 export function idFromMediaUrl(url) {
@@ -46,6 +50,15 @@ export async function detectFile(buffer, originalName = '') {
   const ext = path.extname(originalName).toLowerCase();
   if (TEXT_EXT[ext] && !buffer.includes(0)) return { kind: 'file', mime: TEXT_EXT[ext], ext: ext.slice(1) };
   return null;
+}
+
+/** Detects a supported video container from the first bytes of an upload. */
+export async function detectVideo(buffer) {
+  const ft = await fileTypeFromBuffer(buffer);
+  // Matroska/WebM recorded by browsers is sometimes reported by its container type.
+  const mime = ft?.mime === 'video/x-matroska' ? 'video/webm' : ft?.mime;
+  if (!mime || !VIDEO_MIME.has(mime)) return null;
+  return { kind: 'video', mime, ext: mime === 'video/quicktime' ? 'mov' : ft.ext === 'mkv' ? 'webm' : ft.ext };
 }
 
 export function safeFileName(name, ext) {
@@ -115,7 +128,52 @@ export async function findFile(id) {
   return filesCollection().findOne({ _id: new ObjectId(id) });
 }
 
-export const openDownloadStream = (id) => bucket().openDownloadStream(new ObjectId(id));
+/** `range` = { start, end } with an inclusive end, as in an HTTP Range header. */
+export const openDownloadStream = (id, range) =>
+  bucket().openDownloadStream(new ObjectId(id), range ? { start: range.start, end: range.end + 1 } : undefined);
+
+let chunkIndexReady = null;
+const ensureChunkIndex = () => {
+  // Same index the GridFS driver creates; needed before chunks are written directly.
+  chunkIndexReady ||= chunksCollection()
+    .createIndex({ files_id: 1, n: 1 }, { unique: true })
+    .catch((err) => {
+      chunkIndexReady = null;
+      throw err;
+    });
+  return chunkIndexReady;
+};
+
+/**
+ * Writes one chunk of a resumable upload directly as GridFS chunk `n` of `fileId`.
+ * Upserting makes re-sent chunks (client retries) harmless.
+ */
+export async function writeChunk(fileId, n, data) {
+  await ensureChunkIndex();
+  const files_id = new ObjectId(String(fileId));
+  await chunksCollection().updateOne(
+    { files_id, n },
+    { $set: { data }, $setOnInsert: { _id: new ObjectId() } },
+    { upsert: true },
+  );
+}
+
+/** Publishes a fully uploaded chunked file by creating its GridFS file document. */
+export async function finalizeChunkedFile(fileId, { length, chunkSize, filename, contentType, metadata = {} }) {
+  await filesCollection().insertOne({
+    _id: new ObjectId(String(fileId)),
+    length,
+    chunkSize,
+    uploadDate: new Date(),
+    filename,
+    metadata: { ...metadata, contentType },
+  });
+}
+
+export async function deleteChunks(fileId) {
+  if (!fileId || !ObjectId.isValid(fileId)) return;
+  await chunksCollection().deleteMany({ files_id: new ObjectId(String(fileId)) });
+}
 
 export async function deleteFile(id) {
   if (!id || !ObjectId.isValid(id)) return;

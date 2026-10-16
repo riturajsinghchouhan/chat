@@ -12,7 +12,7 @@
    ▼
  MongoDB (Atlas)
    ├─ users, sessions, conversations, messages, notifications
-   └─ media.files / media.chunks  (GridFS: images, thumbnails, documents, avatars)
+   └─ media.files / media.chunks  (GridFS: images, thumbnails, documents, videos, avatars)
 ```
 
 The frontend can stay on Vercel while the API and the persistent Socket.IO server run on Render or a VPS. Socket.IO needs a long-lived process, so it must **not** be deployed as a Vercel Serverless Function.
@@ -30,7 +30,11 @@ The frontend can stay on Vercel while the API and the persistent Socket.IO serve
 
 Per-member state (unread count, pin/archive/mute, last read) lives inside the conversation's `members` array, so the chat list loads in one query. User data is referenced, not copied.
 
-**Cleanup policy:** expired sessions (TTL index), old notifications (TTL index), unattached uploads older than 24 h and expired reset tokens (hourly job). Messages and attached media are never removed by routine cleanup — only by explicit "delete for everyone".
+**Video snaps (≤ 30 s):** `POST /api/media/uploads` opens a resumable session, the client `PUT`s 1 MB chunks (3 in parallel, retried with backoff) to `/api/media/uploads/:id/chunks/:n`, then `POST …/complete` (with an optional poster frame). Chunks are written directly as GridFS chunks of the final file, and the `media.files` document is only created on completion, so partial uploads are never readable. The first chunk is type-sniffed (MP4/WebM/MOV). Playback uses `GET /api/media/:id/link` (short-lived signed URL, since `<video>` cannot send the Authorization header) and `GET /api/media/:id` answers `Range` requests with `206 Partial Content`, so the browser streams and seeks in pieces.
+
+**Bulk delete:** `POST /api/messages/bulk-delete { conversationId, messageIds (≤100), scope: me | everyone }`. "everyone" is all-or-nothing (all must be your own, within the time window); emits `message:hidden { messageIds }` or `messages:updated { messages }`.
+
+**Cleanup policy:** expired sessions (TTL index), old notifications (TTL index), unattached uploads older than 24 h, abandoned chunked uploads (sessions idle > 1 h) and expired reset tokens (hourly job). Messages and attached media are never removed by routine cleanup — only by explicit "delete for everyone".
 
 ## Message delivery guarantees
 

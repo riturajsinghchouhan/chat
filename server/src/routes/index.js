@@ -1,9 +1,10 @@
-import { Router } from 'express';
+import express, { Router } from 'express';
 import mongoose from 'mongoose';
 import { requireAuth, optionalAuth } from '../middleware/auth.js';
-import { authLimiter, uploadLimiter } from '../middleware/rateLimit.js';
+import { authLimiter, chunkLimiter, uploadLimiter } from '../middleware/rateLimit.js';
 import { uploadSingle } from '../middleware/upload.js';
 import { validate } from '../utils/validate.js';
+import { env } from '../config/env.js';
 
 import * as auth from '../controllers/authController.js';
 import * as users from '../controllers/userController.js';
@@ -68,6 +69,7 @@ m.get('/search', validate({ query: messages.schemas.searchAll }), messages.searc
 m.get('/item/:messageId', validate({ params: messages.schemas.idParam }), messages.getMessage);
 m.get('/:conversationId', validate({ params: messages.schemas.convParam, query: messages.schemas.list }), messages.listMessages);
 m.post('/', validate({ body: messages.schemas.send }), messages.createMessage);
+m.post('/bulk-delete', validate({ body: messages.schemas.bulkRemove }), messages.bulkDeleteMessages);
 m.patch('/:messageId', validate({ params: messages.schemas.idParam, body: messages.schemas.edit }), messages.editMessage);
 m.delete('/:messageId', validate({ params: messages.schemas.idParam, query: messages.schemas.remove }), messages.deleteMessage);
 m.post('/:messageId/reactions', validate({ params: messages.schemas.idParam, body: messages.schemas.react }), messages.reactToMessage);
@@ -77,6 +79,23 @@ router.use('/messages', m);
 // Media (GridFS)
 router.post('/media/upload', requireAuth, uploadLimiter, uploadSingle('file'), validate({ body: media.schemas.upload }), media.uploadMedia);
 router.get('/media/:mediaId', optionalAuth, validate({ params: media.schemas.idParam, query: media.schemas.get }), media.getMedia);
+router.get('/media/:mediaId/link', requireAuth, validate({ params: media.schemas.idParam }), media.getMediaLink);
+
+// Resumable chunked uploads (videos): init → PUT each chunk (any order, retryable) → complete
+const up = Router();
+up.use(requireAuth);
+up.post('/', uploadLimiter, validate({ body: media.schemas.initUpload }), media.initUpload);
+up.get('/:uploadId', validate({ params: media.schemas.uploadParam }), media.getUploadStatus);
+up.put(
+  '/:uploadId/chunks/:index',
+  chunkLimiter,
+  validate({ params: media.schemas.chunkParam }),
+  express.raw({ type: 'application/octet-stream', limit: env.UPLOAD_CHUNK_BYTES }),
+  media.uploadChunk,
+);
+up.post('/:uploadId/complete', validate({ params: media.schemas.uploadParam }), uploadSingle('poster', 5), media.completeUpload);
+up.delete('/:uploadId', validate({ params: media.schemas.uploadParam }), media.abortUpload);
+router.use('/media/uploads', up);
 
 // Groups
 const g = Router();

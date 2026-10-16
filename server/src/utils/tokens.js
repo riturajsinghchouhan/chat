@@ -43,3 +43,23 @@ export function refreshCookieOptions() {
     maxAge: env.REFRESH_TOKEN_DAYS * 24 * 60 * 60 * 1000,
   };
 }
+
+// Short-lived signed media links. <video src> cannot send an Authorization header, so
+// streamed media is fetched with ?u=<userId>&exp=<unix>&sig=<hmac> instead.
+const mediaKey = () => crypto.createHash('sha256').update(`media-url:${env.JWT_ACCESS_SECRET}`).digest();
+const mediaSig = (mediaId, userId, exp) =>
+  crypto.createHmac('sha256', mediaKey()).update(`${mediaId}.${userId}.${exp}`).digest('base64url');
+
+export function signMediaAccess(mediaId, userId, ttlSeconds = 6 * 60 * 60) {
+  const exp = Math.floor(Date.now() / 1000) + ttlSeconds;
+  return { u: String(userId), exp, sig: mediaSig(String(mediaId), String(userId), exp) };
+}
+
+/** Returns the user id the link was issued to, or null if it is invalid or expired. */
+export function verifyMediaAccess(mediaId, { u, exp, sig } = {}) {
+  const expires = Number(exp);
+  if (!u || !sig || !Number.isFinite(expires) || expires < Date.now() / 1000) return null;
+  const expected = Buffer.from(mediaSig(String(mediaId), String(u), expires));
+  const given = Buffer.from(String(sig));
+  return expected.length === given.length && crypto.timingSafeEqual(expected, given) ? String(u) : null;
+}

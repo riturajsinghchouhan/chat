@@ -3,6 +3,7 @@ import toast from 'react-hot-toast';
 import { api, getErrorMessage } from '../lib/api';
 import { emitAck, getSocket } from '../lib/socket';
 import { applyDelivered, applyRead, mergeMessages } from '../lib/messages';
+import { uploadChunked } from '../lib/chunkedUpload';
 import { conversationDisplay, idOf, messagePreview, uid } from '../lib/utils';
 import { playMessageSound, showBrowserNotification } from '../lib/notify';
 import { useAuth } from './authStore';
@@ -195,15 +196,47 @@ export const useChat = create((set, get) => ({
     if (!thread) return;
     const msg = thread.items.find((m) => m._id === key || m.clientId === key);
     if (msg?.localPreview) URL.revokeObjectURL(msg.localPreview);
+    if (msg?.posterPreview) URL.revokeObjectURL(msg.posterPreview);
+    const pending = pendingUploads.get(key);
+    // Free the server-side chunks of an unfinished video upload.
+    if (pending?.upload?.uploadId && !pending.media) api.delete(`/media/uploads/${pending.upload.uploadId}`).catch(() => {});
     pendingUploads.delete(key);
     get().setThread(convId, { items: thread.items.filter((m) => m !== msg) });
   },
 
+  /** Applies server copies of existing messages (edits, reactions, deletions). */
+  applyMessageUpdates(convId, messages) {
+    const byId = new Map(messages.map((m) => [m._id, m]));
+    const thread = get().threads[convId];
+    if (thread) {
+      get().setThread(convId, {
+        items: thread.items.map((m) => (byId.has(m._id) ? { ...byId.get(m._id), localPreview: m.localPreview, posterPreview: m.posterPreview } : m)),
+      });
+    }
+    const conv = get().conversations[convId];
+    if (conv?.lastMessage && byId.has(conv.lastMessage._id)) get().upsertConversation({ ...conv, lastMessage: byId.get(conv.lastMessage._id) });
+  },
+
+  hideLocalMessages(convId, ids) {
+    const thread = get().threads[convId];
+    if (!thread) return;
+    const hidden = new Set(ids.map(String));
+    get().setThread(convId, { items: thread.items.filter((m) => !hidden.has(String(m._id))) });
+  },
+
+  /** Deletes several messages at once. scope: 'me' (hide for me) | 'everyone'. Throws on failure. */
+  async deleteMessages(convId, ids, scope) {
+    const { data } = await api.post('/messages/bulk-delete', { conversationId: convId, messageIds: ids, scope });
+    if (scope === 'me') get().hideLocalMessages(convId, ids);
+    else get().applyMessageUpdates(convId, data.messages);
+  },
+
   /**
-   * Optimistic send. `file` → uploaded here with progress (bubble shows retry on failure).
+   * Optimistic send. `file` → uploaded here with progress (bubble shows retry on failure);
+   * videos go through the resumable chunked upload with `videoMeta` + `poster`.
    * `media` → already uploaded (camera flow). `gif` → provider metadata.
    */
-  sendMessage(convId, { type = 'text', text = '', file, media, gif, replyTo, localPreview }) {
+  sendMessage(convId, { type = 'text', text = '', file, media, gif, replyTo, localPreview, videoMeta, poster }) {
     const me = useAuth.getState().user;
     const clientId = uid();
     const optimistic = {
@@ -225,10 +258,18 @@ export const useChat = create((set, get) => ({
         fileName: file.name,
         fileSize: file.size,
         mimeType: file.type,
-        localPreview: type === 'image' ? URL.createObjectURL(file) : null,
+        localPreview: type === 'image' || type === 'video' ? URL.createObjectURL(file) : null,
         uploadProgress: 0,
       });
-      pendingUploads.set(clientId, { file });
+      if (type === 'video') {
+        Object.assign(optimistic, {
+          duration: videoMeta?.duration,
+          width: videoMeta?.width,
+          height: videoMeta?.height,
+          posterPreview: poster ? URL.createObjectURL(poster) : null,
+        });
+      }
+      pendingUploads.set(clientId, { file, videoMeta, poster, upload: {} });
     }
     if (media) {
       Object.assign(optimistic, { ...media, localPreview });
@@ -260,9 +301,18 @@ export const useChat = create((set, get) => ({
 
     try {
       if (pending?.file && !pending.media) {
-        pending.media = await uploadMedia(convId, pending.file, (p) =>
-          get().patchLocalMessage(convId, clientId, { uploadProgress: p }),
-        );
+        const onProgress = (p) => get().patchLocalMessage(convId, clientId, { uploadProgress: p });
+        pending.media =
+          msg.type === 'video'
+            ? await uploadChunked({
+                conversationId: convId,
+                file: pending.file,
+                meta: pending.videoMeta,
+                poster: pending.poster,
+                onProgress,
+                state: pending.upload, // resumes from the last uploaded chunk on retry
+              })
+            : await uploadMedia(convId, pending.file, onProgress);
       }
       const payload = {
         clientId,
@@ -388,21 +438,11 @@ export const useChat = create((set, get) => ({
       s().setTyping(convId, idOf(message.senderId), false);
     });
 
-    socket.on('message:updated', ({ message }) => {
-      const convId = idOf(message.conversationId);
-      const thread = s().threads[convId];
-      if (thread) {
-        s().setThread(convId, {
-          items: thread.items.map((m) => (m._id === message._id ? { ...message, localPreview: m.localPreview } : m)),
-        });
-      }
-      const conv = s().conversations[convId];
-      if (conv?.lastMessage?._id === message._id) s().upsertConversation({ ...conv, lastMessage: message });
-    });
+    socket.on('message:updated', ({ message }) => s().applyMessageUpdates(idOf(message.conversationId), [message]));
+    socket.on('messages:updated', ({ conversationId, messages }) => s().applyMessageUpdates(conversationId, messages));
 
-    socket.on('message:hidden', ({ conversationId, messageId }) => {
-      const thread = s().threads[conversationId];
-      if (thread) s().setThread(conversationId, { items: thread.items.filter((m) => m._id !== messageId) });
+    socket.on('message:hidden', ({ conversationId, messageId, messageIds }) => {
+      s().hideLocalMessages(conversationId, messageIds || [messageId]);
     });
 
     socket.on('message:delivered', ({ conversationId, messageIds, userId, deliveredAt }) => {

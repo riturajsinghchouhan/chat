@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api } from '../lib/api';
+import { API_ORIGIN, api } from '../lib/api';
 
 // Private chat media requires the Authorization header, which <img src> cannot send.
 // We fetch it as a blob once, then reuse an object URL (small LRU cache).
@@ -64,6 +64,19 @@ export function useMediaUrl(url, { enabled = true } = {}) {
   }, [url, enabled]);
 
   return state;
+}
+
+// Videos are played by the browser itself (<video src>), which streams them with HTTP Range
+// requests. It cannot send the Authorization header, so it gets a short-lived signed link.
+const streamLinks = new Map();
+
+export async function getStreamUrl(url) {
+  const cached = streamLinks.get(url);
+  if (cached && cached.expiresAt - Date.now() > 5 * 60 * 1000) return cached.src;
+  const { data } = await api.get(`${url.replace(/^\/api/, '')}/link`);
+  const entry = { src: `${API_ORIGIN}${data.url}`, expiresAt: new Date(data.expiresAt).getTime() };
+  streamLinks.set(url, entry);
+  return entry.src;
 }
 
 export async function downloadMedia(url, fileName = 'download') {

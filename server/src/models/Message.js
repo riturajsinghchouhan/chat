@@ -2,7 +2,7 @@ import mongoose from 'mongoose';
 
 const { Schema } = mongoose;
 
-export const MESSAGE_TYPES = ['text', 'image', 'gif', 'file', 'system'];
+export const MESSAGE_TYPES = ['text', 'image', 'gif', 'file', 'video', 'system'];
 
 const receiptSchema = new Schema(
   { user: { type: Schema.Types.ObjectId, ref: 'User' }, at: { type: Date, default: Date.now } },
@@ -24,7 +24,7 @@ const messageSchema = new Schema(
     type: { type: String, enum: MESSAGE_TYPES, default: 'text' },
     text: { type: String, default: '', maxlength: 4000 },
 
-    // Media (images/files live in MongoDB GridFS, GIFs are provider URLs)
+    // Media (images/files/videos live in MongoDB GridFS, GIFs are provider URLs)
     mediaId: { type: Schema.Types.ObjectId, default: null },
     thumbnailId: { type: Schema.Types.ObjectId, default: null },
     mediaUrl: { type: String, default: null },
@@ -34,6 +34,7 @@ const messageSchema = new Schema(
     fileSize: { type: Number, default: null },
     width: { type: Number, default: null },
     height: { type: Number, default: null },
+    duration: { type: Number, default: null }, // seconds (videos)
     provider: { type: String, default: null }, // e.g. "giphy"
     providerId: { type: String, default: null },
 

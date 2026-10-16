@@ -32,6 +32,7 @@ export function mergeMessages(list, incoming) {
       status: keepStatus ? prev.status : msg.status,
       readBy: (prev.readBy?.length || 0) > (msg.readBy?.length || 0) ? prev.readBy : msg.readBy,
       localPreview: prev.localPreview,
+      posterPreview: prev.posterPreview,
     };
   }
   return next.sort(byTime);
@@ -58,3 +59,15 @@ export function applyRead(list, { meId, readerId, readAt, isGroup, memberCount }
     return { ...m, readBy, status: allRead ? 'read' : (STATUS_RANK[m.status] ?? 0) < STATUS_RANK.delivered ? 'delivered' : m.status };
   });
 }
+
+// Mirrors the server's DELETE_FOR_EVERYONE_MINUTES (default 60).
+export const DELETE_FOR_EVERYONE_MS = 60 * 60 * 1000;
+
+export function canDeleteForEveryone(msg, meId, now = Date.now()) {
+  if (!msg || msg.type === 'system' || msg.deletedAt) return false;
+  if (msg.status === 'sending' || msg.status === 'failed') return false;
+  return idOf(msg.senderId) === meId && now - new Date(msg.createdAt).getTime() < DELETE_FOR_EVERYONE_MS;
+}
+
+/** Messages that can take part in a multi-select (persisted, non-system). */
+export const isSelectable = (msg) => Boolean(msg) && msg.type !== 'system' && msg.status !== 'sending' && msg.status !== 'failed';

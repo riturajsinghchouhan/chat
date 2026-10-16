@@ -11,6 +11,7 @@ import GifPicker from './GifPicker';
 import CameraCaptureModal from './CameraCaptureModal';
 import FileUploadButton from './FileUploadButton';
 import AttachmentPreviewModal from './AttachmentPreviewModal';
+import { MAX_VIDEO_SECONDS, probeVideo } from '../lib/video';
 
 const drafts = new Map();
 
@@ -125,10 +126,23 @@ export default function MessageComposer({ conversationId, replyTo, onCancelReply
     onCancelReply?.();
   };
 
+  const pickAttachment = async (file, type) => {
+    if (type !== 'video') return setAttachment({ file, type });
+    try {
+      const { poster, ...meta } = await probeVideo(file);
+      if (!Number.isFinite(meta.duration) || meta.duration > MAX_VIDEO_SECONDS + 0.5) {
+        return toast.error(`Videos can be at most ${MAX_VIDEO_SECONDS} seconds long`);
+      }
+      return setAttachment({ file, type, videoMeta: meta, poster });
+    } catch (err) {
+      return toast.error(getErrorMessage(err, 'This video could not be read'));
+    }
+  };
+
   const sendAttachment = (caption) => {
-    const { file, type } = attachment;
+    const { file, type, videoMeta, poster } = attachment;
     setAttachment(null);
-    useChat.getState().sendMessage(conversationId, { type, file, text: caption, replyTo });
+    useChat.getState().sendMessage(conversationId, { type, file, text: caption, replyTo, videoMeta, poster });
     onCancelReply?.();
   };
 
@@ -192,8 +206,8 @@ export default function MessageComposer({ conversationId, replyTo, onCancelReply
               >
                 GIF
               </button>
-              <FileUploadButton onFile={(file, type) => setAttachment({ file, type })} />
-              <button type="button" className="icon-btn h-9 w-8 sm:w-9" onClick={() => setCameraOpen(true)} aria-label="Camera" title="Take a photo">
+              <FileUploadButton onFile={pickAttachment} />
+              <button type="button" className="icon-btn h-9 w-8 sm:w-9" onClick={() => setCameraOpen(true)} aria-label="Camera" title="Photo or video snap">
                 <Camera size={19} />
               </button>
             </>

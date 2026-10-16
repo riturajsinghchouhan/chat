@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Copy, Forward, Pencil, Pin, PinOff, Reply, SmilePlus, Trash2 } from 'lucide-react';
+import { CheckSquare, Copy, Forward, Pencil, Pin, PinOff, Reply, SmilePlus, Trash2 } from 'lucide-react';
 import { useClickOutside } from '../hooks/useClickOutside';
 import EmojiPicker from './EmojiPicker';
 
@@ -79,6 +79,7 @@ export default function MessageActionsMenu({ anchor, onClose, actions, myReactio
           {actions.forward && item(Forward, 'Forward', actions.forward)}
           {actions.pin && item(actions.pinned ? PinOff : Pin, actions.pinned ? 'Unpin' : 'Pin', actions.pin)}
           {actions.edit && item(Pencil, 'Edit', actions.edit)}
+          {actions.select && item(CheckSquare, 'Select', actions.select)}
           {actions.deleteMe && item(Trash2, 'Delete for me', actions.deleteMe, true)}
           {actions.deleteAll && item(Trash2, 'Delete for everyone', actions.deleteAll, true)}
         </div>

@@ -19,7 +19,7 @@ export const schemas = {
     .object({ pinned: z.boolean().optional(), archived: z.boolean().optional(), muted: z.boolean().optional() })
     .refine((v) => Object.keys(v).length > 0, 'Nothing to update'),
   media: z.object({
-    type: z.enum(['image', 'file', 'gif', 'all']).default('all'),
+    type: z.enum(['image', 'file', 'gif', 'video', 'all']).default('all'),
     before: objectId.optional(),
     limit: z.coerce.number().int().min(1).max(100).default(60),
   }),
@@ -105,7 +105,7 @@ export async function listMedia(req, res) {
     conversationId: req.params.conversationId,
     deletedAt: null,
     hiddenFor: { $ne: req.user.id },
-    type: type === 'all' ? { $in: ['image', 'file', 'gif'] } : type,
+    type: type === 'all' ? { $in: ['image', 'file', 'gif', 'video'] } : type,
   };
   if (before) filter._id = { $lt: before };
   const messages = await Message.find(filter).sort({ _id: -1 }).limit(limit).populate(MESSAGE_POPULATE);

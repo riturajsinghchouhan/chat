@@ -17,7 +17,7 @@ const httpsUrl = z.string().url().max(1000);
 export const sendMessageSchema = z.object({
   clientId: z.string().min(8).max(64).regex(/^[\w-]+$/, 'Invalid clientId'),
   conversationId: objectId,
-  type: z.enum(['text', 'image', 'file', 'gif']),
+  type: z.enum(['text', 'image', 'file', 'video', 'gif']),
   text: z.string().max(4000, 'Message is too long').optional().default(''),
   mediaId: objectId.optional(),
   gif: z
@@ -132,7 +132,7 @@ export async function sendMessage({ userId, payload }) {
 
   if (data.type === 'text') {
     if (!fields.text) throw badRequest('Message cannot be empty');
-  } else if (data.type === 'image' || data.type === 'file') {
+  } else if (data.type === 'image' || data.type === 'file' || data.type === 'video') {
     if (!data.mediaId) throw badRequest('mediaId is required');
     const file = await findFile(data.mediaId);
     const meta = file?.metadata;
@@ -155,6 +155,7 @@ export async function sendMessage({ userId, payload }) {
       fileSize: file.length,
       width: meta.width ?? null,
       height: meta.height ?? null,
+      duration: meta.duration ?? null,
     });
   } else if (data.type === 'gif') {
     if (!data.gif) throw badRequest('gif is required');

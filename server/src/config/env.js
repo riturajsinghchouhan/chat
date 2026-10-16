@@ -47,5 +47,8 @@ export const env = {
   MAIL_FROM: process.env.MAIL_FROM || 'Pulse Chat <no-reply@example.com>',
   MAX_IMAGE_MB: int('MAX_IMAGE_MB', 10),
   MAX_FILE_MB: int('MAX_FILE_MB', 20),
+  MAX_VIDEO_MB: int('MAX_VIDEO_MB', 50),
+  MAX_VIDEO_SECONDS: int('MAX_VIDEO_SECONDS', 30),
+  UPLOAD_CHUNK_BYTES: int('UPLOAD_CHUNK_BYTES', 1024 * 1024),
   DELETE_FOR_EVERYONE_MINUTES: int('DELETE_FOR_EVERYONE_MINUTES', 60),
 };

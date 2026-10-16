@@ -2,10 +2,11 @@ import { useRef } from 'react';
 import { Paperclip } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { IMAGE_TYPES, MAX_IMAGE_BYTES } from './CameraCaptureModal';
+import { MAX_VIDEO_BYTES, VIDEO_TYPES } from '../lib/video';
 
 export const MAX_FILE_BYTES = 20 * 1024 * 1024;
 const DOC_EXT = ['.pdf', '.docx', '.xlsx', '.pptx', '.zip', '.txt', '.csv', '.md'];
-export const ACCEPT = [...IMAGE_TYPES, ...DOC_EXT].join(',');
+export const ACCEPT = [...IMAGE_TYPES, ...VIDEO_TYPES, ...DOC_EXT].join(',');
 
 /** Client-side pre-check for fast feedback. The server re-validates the real file content. */
 export function classifyFile(file) {
@@ -13,8 +14,12 @@ export function classifyFile(file) {
     if (file.size > MAX_IMAGE_BYTES) return { error: 'Images must be 10 MB or smaller' };
     return { type: 'image' };
   }
+  if (VIDEO_TYPES.includes(file.type)) {
+    if (file.size > MAX_VIDEO_BYTES) return { error: 'Videos must be 50 MB or smaller' };
+    return { type: 'video' };
+  }
   const ext = `.${file.name.split('.').pop()?.toLowerCase()}`;
-  if (!DOC_EXT.includes(ext)) return { error: 'Unsupported file type. Allowed: images, PDF, Office files, ZIP, TXT, CSV' };
+  if (!DOC_EXT.includes(ext)) return { error: 'Unsupported file type. Allowed: images, videos, PDF, Office files, ZIP, TXT, CSV' };
   if (file.size > MAX_FILE_BYTES) return { error: 'Files must be 20 MB or smaller' };
   return { type: 'file' };
 }

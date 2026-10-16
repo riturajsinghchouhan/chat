@@ -31,6 +31,11 @@ export const schemas = {
   send: sendMessageSchema,
   edit: z.object({ text: z.string().trim().min(1, 'Message cannot be empty').max(4000) }),
   remove: z.object({ scope: z.enum(['me', 'everyone']).default('me') }),
+  bulkRemove: z.object({
+    conversationId: objectId,
+    messageIds: z.array(objectId).min(1).max(100),
+    scope: z.enum(['me', 'everyone']).default('me'),
+  }),
   react: z.object({ emoji: z.string().min(1).max(16) }),
   forward: z.object({ conversationIds: z.array(objectId).min(1).max(5) }),
 };
@@ -75,12 +80,79 @@ export async function editMessage(req, res) {
   const { msg, conv } = await loadMessageForMember(req.params.messageId, req.user.id);
   if (String(msg.senderId) !== req.user.id) throw forbidden('You can only edit your own messages');
   if (msg.deletedAt) throw badRequest('Deleted messages cannot be edited');
-  if (!['text', 'image', 'file'].includes(msg.type)) throw badRequest('This message cannot be edited');
+  if (!['text', 'image', 'file', 'video'].includes(msg.type)) throw badRequest('This message cannot be edited');
   msg.text = req.body.text;
   msg.editedAt = new Date();
   await msg.save();
   logger.info('Message edited', { messageId: String(msg._id), userId: req.user.id });
   res.json({ message: await broadcastMessageUpdate(msg, conv) });
+}
+
+/** Why `userId` may not delete `msg` for everyone, or null if allowed. */
+function deleteForEveryoneError(msg, userId) {
+  if (String(msg.senderId) !== String(userId)) return 'You can only delete your own messages for everyone';
+  if (msg.type === 'system') return 'System messages cannot be deleted';
+  if (msg.deletedAt) return null;
+  const ageMinutes = (Date.now() - msg.createdAt.getTime()) / 60000;
+  if (ageMinutes > env.DELETE_FOR_EVERYONE_MINUTES) {
+    return `Messages can only be deleted for everyone within ${env.DELETE_FOR_EVERYONE_MINUTES} minutes`;
+  }
+  return null;
+}
+
+/**
+ * Tombstones the messages (content and reactions cleared), removes stored files no other
+ * message still references, and unpins them. Returns the updated documents.
+ */
+async function wipeForEveryone(msgs, conv, userId) {
+  const mediaIds = [];
+  const wiped = [];
+  for (const msg of msgs) {
+    if (msg.deletedAt) continue;
+    mediaIds.push(...[msg.mediaId, msg.thumbnailId].filter(Boolean));
+    Object.assign(msg, {
+      text: '',
+      mediaId: null,
+      thumbnailId: null,
+      mediaUrl: null,
+      thumbnailUrl: null,
+      fileName: null,
+      fileSize: null,
+      mimeType: null,
+      duration: null,
+      provider: null,
+      providerId: null,
+      reactions: [],
+      deletedAt: new Date(),
+    });
+    await msg.save();
+    wiped.push(msg);
+  }
+  logger.info('Messages deleted for everyone', {
+    messageIds: wiped.map((m) => String(m._id)),
+    conversationId: String(conv._id),
+    userId,
+  });
+  // Remove the stored file unless a forwarded copy still references it.
+  for (const id of mediaIds) {
+    const stillUsed = await Message.exists({ $or: [{ mediaId: id }, { thumbnailId: id }] });
+    if (!stillUsed) await deleteFile(id);
+  }
+  const ids = new Set(msgs.map((m) => String(m._id)));
+  const unpin = conv.pinnedMessages.filter((id) => ids.has(String(id)));
+  if (unpin.length) {
+    await Conversation.updateOne({ _id: conv._id }, { $pull: { pinnedMessages: { $in: unpin } } });
+    emitToUsers(conv.memberIds(), 'conversation:updated', { conversation: { _id: conv._id }, refetch: true });
+  }
+  return msgs;
+}
+
+function hideForMe(conv, userId, messageIds) {
+  emitToUsers([userId], 'message:hidden', {
+    conversationId: String(conv._id),
+    messageIds: messageIds.map(String),
+    messageId: String(messageIds[0]), // kept for older clients
+  });
 }
 
 export async function deleteMessage(req, res) {
@@ -89,46 +161,45 @@ export async function deleteMessage(req, res) {
 
   if (scope === 'me') {
     await Message.updateOne({ _id: msg._id }, { $addToSet: { hiddenFor: req.user.id } });
-    emitToUsers([req.user.id], 'message:hidden', { conversationId: String(conv._id), messageId: String(msg._id) });
+    hideForMe(conv, req.user.id, [msg._id]);
     logger.info('Message deleted for me', { messageId: String(msg._id), userId: req.user.id });
     return res.json({ ok: true });
   }
 
-  if (String(msg.senderId) !== req.user.id) throw forbidden('You can only delete your own messages for everyone');
-  if (msg.type === 'system') throw badRequest('System messages cannot be deleted');
+  const error = deleteForEveryoneError(msg, req.user.id);
+  if (error) throw msg.type === 'system' ? badRequest(error) : forbidden(error);
   if (msg.deletedAt) return res.json({ message: msg.toJSON() });
-  const ageMinutes = (Date.now() - msg.createdAt.getTime()) / 60000;
-  if (ageMinutes > env.DELETE_FOR_EVERYONE_MINUTES) {
-    throw forbidden(`Messages can only be deleted for everyone within ${env.DELETE_FOR_EVERYONE_MINUTES} minutes`);
+  await wipeForEveryone([msg], conv, req.user.id);
+  res.json({ message: await broadcastMessageUpdate(msg, conv) });
+}
+
+/**
+ * Deletes several messages of one conversation at once. "everyone" is all-or-nothing:
+ * if any selected message may not be deleted for everyone, nothing is deleted.
+ */
+export async function bulkDeleteMessages(req, res) {
+  const { conversationId, scope } = req.body;
+  const messageIds = [...new Set(req.body.messageIds)];
+  const conv = await loadConversationForMember(conversationId, req.user.id, { populate: false });
+  const msgs = await Message.find({ _id: { $in: messageIds }, conversationId: conv._id, hiddenFor: { $ne: req.user.id } });
+  if (msgs.length !== messageIds.length) throw notFound('Some messages were not found');
+
+  if (scope === 'me') {
+    await Message.updateMany({ _id: { $in: messageIds }, conversationId: conv._id }, { $addToSet: { hiddenFor: req.user.id } });
+    hideForMe(conv, req.user.id, messageIds);
+    logger.info('Messages deleted for me', { count: messageIds.length, conversationId: String(conv._id), userId: req.user.id });
+    return res.json({ ok: true, messageIds });
   }
 
-  const mediaIds = [msg.mediaId, msg.thumbnailId].filter(Boolean);
-  Object.assign(msg, {
-    text: '',
-    mediaId: null,
-    thumbnailId: null,
-    mediaUrl: null,
-    thumbnailUrl: null,
-    fileName: null,
-    fileSize: null,
-    mimeType: null,
-    provider: null,
-    providerId: null,
-    reactions: [],
-    deletedAt: new Date(),
-  });
-  await msg.save();
-  // Remove the stored file unless a forwarded copy still references it.
-  logger.info('Message deleted for everyone', { messageId: String(msg._id), conversationId: String(conv._id), userId: req.user.id });
-  for (const id of mediaIds) {
-    const stillUsed = await Message.exists({ $or: [{ mediaId: id }, { thumbnailId: id }] });
-    if (!stillUsed) await deleteFile(id);
+  for (const msg of msgs) {
+    const error = deleteForEveryoneError(msg, req.user.id);
+    if (error) throw forbidden(error, 'CANNOT_DELETE_FOR_EVERYONE');
   }
-  if (conv.pinnedMessages.some((id) => String(id) === String(msg._id))) {
-    await Conversation.updateOne({ _id: conv._id }, { $pull: { pinnedMessages: msg._id } });
-    emitToUsers(conv.memberIds(), 'conversation:updated', { conversation: { _id: conv._id }, refetch: true });
-  }
-  res.json({ message: await broadcastMessageUpdate(msg, conv) });
+  await wipeForEveryone(msgs, conv, req.user.id);
+  await Message.populate(msgs, MESSAGE_POPULATE);
+  const messages = msgs.map((m) => m.toJSON());
+  emitToUsers(conv.memberIds(), 'messages:updated', { conversationId: String(conv._id), messages });
+  res.json({ messages });
 }
 
 export async function reactToMessage(req, res) {
@@ -161,6 +232,7 @@ export async function forwardMessage(req, res) {
       fileSize: msg.fileSize,
       width: msg.width,
       height: msg.height,
+      duration: msg.duration,
       provider: msg.provider,
       providerId: msg.providerId,
     };

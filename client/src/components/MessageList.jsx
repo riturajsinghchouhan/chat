@@ -10,7 +10,7 @@ import EmptyState from './EmptyState';
 
 const EMPTY = [];
 
-export default function MessageList({ conversation, meId, onReply, onEdit }) {
+export default function MessageList({ conversation, meId, onReply, onEdit, selection, onToggleSelect }) {
   const convId = conversation._id;
   const thread = useChat((s) => s.threads[convId]);
   const typingMap = useChat((s) => s.typing[convId]);
@@ -194,6 +194,9 @@ export default function MessageList({ conversation, meId, onReply, onEdit }) {
                   onJump={jump}
                   highlighted={highlightId === m._id}
                   galleryItems={gallery}
+                  selectMode={Boolean(selection)}
+                  selected={selection?.has(m._id) || false}
+                  onToggleSelect={onToggleSelect}
                 />
               )}
             </Fragment>

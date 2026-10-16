@@ -4,6 +4,7 @@ import { Camera, CameraOff, ImagePlus, RefreshCw, RotateCcw, Send, SwitchCamera,
 import { getErrorMessage } from '../lib/api';
 import { uploadMedia, useChat } from '../store/chatStore';
 import { cn } from '../lib/utils';
+import { MAX_VIDEO_BYTES, MAX_VIDEO_SECONDS, VIDEO_TYPES, extensionForMime, formatDuration, pickRecorderMime, probeVideo } from '../lib/video';
 
 export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 export const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
@@ -35,26 +36,43 @@ export default function CameraCaptureModal({ open, onClose, conversationId, repl
   const requestRef = useRef(Promise.resolve());
   const fileInputRef = useRef(null);
   const sentRef = useRef(false);
+  const recorderRef = useRef(null);
+  const discardRef = useRef(false);
+  const tickRef = useRef(null);
 
   const [phase, setPhase] = useState('starting'); // starting | live | preview | error
   const [error, setError] = useState(null);
   const [facing, setFacing] = useState('user');
   const [canSwitch, setCanSwitch] = useState(false);
-  const [shot, setShot] = useState(null); // { file, url }
+  const [mode, setMode] = useState('photo'); // photo | video
+  const [recording, setRecording] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  const [shot, setShot] = useState(null); // { file, url, kind: 'image' | 'video', meta?, poster? }
   const [caption, setCaption] = useState('');
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [uploadError, setUploadError] = useState(null);
 
+  const stopRecorder = useCallback((discard) => {
+    clearInterval(tickRef.current);
+    const rec = recorderRef.current;
+    if (rec && rec.state !== 'inactive') {
+      discardRef.current = discard;
+      rec.stop();
+    }
+    setRecording(false);
+  }, []);
+
   const stopStream = useCallback(() => {
+    if (recorderRef.current?.state === 'recording') stopRecorder(true);
     attemptRef.current += 1; // invalidate any pending getUserMedia call
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
     if (videoRef.current) videoRef.current.srcObject = null;
-  }, []);
+  }, [stopRecorder]);
 
   const startStream = useCallback(
-    async (facingMode) => {
+    async (facingMode, withAudio = false) => {
       stopStream();
       const attempt = attemptRef.current;
       setPhase('starting');
@@ -71,10 +89,17 @@ export default function CameraCaptureModal({ open, onClose, conversationId, repl
         // Serialize requests: overlapping getUserMedia calls on one device can stall in Chromium.
         await requestRef.current.catch(() => {});
         if (attempt !== attemptRef.current) return;
-        const request = navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: facingMode }, width: { ideal: 1920 }, height: { ideal: 1080 } },
-          audio: false,
-        });
+        const constraints = withAudio
+          ? { facingMode: { ideal: facingMode }, width: { ideal: 1280 }, height: { ideal: 720 } } // keeps 30s clips small
+          : { facingMode: { ideal: facingMode }, width: { ideal: 1920 }, height: { ideal: 1080 } };
+        // Videos want the microphone too; if it is denied or missing, record without sound.
+        const request = navigator.mediaDevices
+          .getUserMedia({ video: constraints, audio: withAudio })
+          .catch((err) =>
+            withAudio && ['NotAllowedError', 'NotFoundError', 'NotReadableError'].includes(err?.name)
+              ? navigator.mediaDevices.getUserMedia({ video: constraints, audio: false })
+              : Promise.reject(err),
+          );
         requestRef.current = request;
         let timer;
         const timeout = new Promise((_, reject) => {
@@ -120,14 +145,15 @@ export default function CameraCaptureModal({ open, onClose, conversationId, repl
     setCaption('');
     setUploadError(null);
     setProgress(0);
-    startStream(facing);
+    setElapsed(0);
+    startStream(facing, mode === 'video');
     return () => stopStream();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   const close = () => {
     stopStream();
-    if (shot && !sentRef.current) URL.revokeObjectURL(shot.url);
+    if (shot && (!sentRef.current || shot.kind === 'video')) URL.revokeObjectURL(shot.url);
     setShot(null);
     onClose();
   };
@@ -147,7 +173,7 @@ export default function CameraCaptureModal({ open, onClose, conversationId, repl
         }
         const file = new File([blob], `camera-${Date.now()}.jpg`, { type: 'image/jpeg' });
         stopStream();
-        setShot({ file, url: URL.createObjectURL(blob) });
+        setShot({ file, url: URL.createObjectURL(blob), kind: 'image' });
         setPhase('preview');
       },
       'image/jpeg',
@@ -155,26 +181,110 @@ export default function CameraCaptureModal({ open, onClose, conversationId, repl
     );
   };
 
+  /** Shows a recorded or picked video for review, after checking its length. */
+  const previewVideo = async (file, fallbackDuration) => {
+    let meta = {};
+    let poster = null;
+    try {
+      ({ poster, ...meta } = await probeVideo(file));
+    } catch {
+      if (!fallbackDuration) {
+        setUploadError('This video could not be read. Try another one.');
+        return;
+      }
+    }
+    const duration = Number.isFinite(meta.duration) ? meta.duration : fallbackDuration;
+    if (!duration || duration > MAX_VIDEO_SECONDS + 0.5) {
+      setUploadError(`Videos can be at most ${MAX_VIDEO_SECONDS} seconds long.`);
+      return;
+    }
+    setUploadError(null);
+    setShot({ file, url: URL.createObjectURL(file), kind: 'video', meta: { ...meta, duration }, poster });
+    setPhase('preview');
+  };
+
+  const startRecording = () => {
+    const stream = streamRef.current;
+    if (!stream || typeof MediaRecorder === 'undefined') {
+      setUploadError('Video recording is not supported in this browser.');
+      return;
+    }
+    const mime = pickRecorderMime();
+    let rec;
+    try {
+      rec = new MediaRecorder(stream, { ...(mime ? { mimeType: mime } : {}), videoBitsPerSecond: 2_500_000 });
+    } catch {
+      setUploadError('Video recording is not supported in this browser.');
+      return;
+    }
+    const chunks = [];
+    const startedAt = Date.now();
+    discardRef.current = false;
+    rec.ondataavailable = (e) => e.data?.size && chunks.push(e.data);
+    rec.onstop = () => {
+      recorderRef.current = null;
+      if (discardRef.current) return;
+      const type = (rec.mimeType || mime || 'video/webm').split(';')[0];
+      const blob = new Blob(chunks, { type });
+      const seconds = Math.min(MAX_VIDEO_SECONDS, (Date.now() - startedAt) / 1000);
+      stopStream();
+      if (blob.size > MAX_VIDEO_BYTES) {
+        setUploadError('The recording is too large. Try a shorter clip.');
+        startStream(facing, true);
+        return;
+      }
+      previewVideo(new File([blob], `snap-${Date.now()}.${extensionForMime(type)}`, { type }), seconds);
+    };
+    recorderRef.current = rec;
+    rec.start(1000);
+    setUploadError(null);
+    setRecording(true);
+    setElapsed(0);
+    tickRef.current = setInterval(() => {
+      const secs = (Date.now() - startedAt) / 1000;
+      setElapsed(secs);
+      if (secs >= MAX_VIDEO_SECONDS) stopRecorder(false); // snaps are capped at 30 seconds
+    }, 200);
+  };
+
+  const changeMode = (next) => {
+    if (next === mode || recording) return;
+    setMode(next);
+    setUploadError(null);
+    startStream(facing, next === 'video');
+  };
+
   const retake = () => {
     if (shot) URL.revokeObjectURL(shot.url);
     setShot(null);
     setUploadError(null);
     setProgress(0);
-    startStream(facing);
+    setElapsed(0);
+    startStream(facing, mode === 'video');
   };
 
   const switchCamera = () => {
     const next = facing === 'user' ? 'environment' : 'user';
     setFacing(next);
-    startStream(next);
+    startStream(next, mode === 'video');
   };
 
   const pickFile = (e) => {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
+    if (VIDEO_TYPES.includes(file.type)) {
+      if (file.size > MAX_VIDEO_BYTES) {
+        setUploadError('Videos must be 50 MB or smaller.');
+        return;
+      }
+      stopStream();
+      if (shot) URL.revokeObjectURL(shot.url);
+      previewVideo(file);
+      return;
+    }
     if (!IMAGE_TYPES.includes(file.type)) {
-      setUploadError('Please choose a JPEG, PNG, WebP or GIF image.');
+      setUploadError('Please choose a photo (JPEG, PNG, WebP, GIF) or a video (MP4, WebM, MOV).');
       return;
     }
     if (file.size > MAX_IMAGE_BYTES) {
@@ -184,12 +294,29 @@ export default function CameraCaptureModal({ open, onClose, conversationId, repl
     stopStream();
     if (shot) URL.revokeObjectURL(shot.url);
     setUploadError(null);
-    setShot({ file, url: URL.createObjectURL(file) });
+    setShot({ file, url: URL.createObjectURL(file), kind: 'image' });
     setPhase('preview');
   };
 
   const send = async () => {
     if (!shot || uploading) return;
+    if (shot.kind === 'video') {
+      // Videos upload in the background (chunked, resumable) with progress on the bubble.
+      useChat.getState().sendMessage(conversationId, {
+        type: 'video',
+        file: shot.file,
+        text: caption.trim(),
+        replyTo,
+        videoMeta: shot.meta,
+        poster: shot.poster,
+      });
+      sentRef.current = true;
+      URL.revokeObjectURL(shot.url);
+      setShot(null);
+      onSent?.();
+      onClose();
+      return;
+    }
     setUploading(true);
     setUploadError(null);
     try {
@@ -213,7 +340,7 @@ export default function CameraCaptureModal({ open, onClose, conversationId, repl
     <div className="fixed inset-0 z-[110] flex items-center justify-center bg-[var(--overlay)] sm:p-4" role="dialog" aria-modal="true" aria-label="Camera">
       <div className="card animate-pop flex h-full w-full flex-col overflow-hidden bg-panel sm:h-auto sm:max-h-[92dvh] sm:max-w-xl sm:rounded-3xl">
         <div className="flex items-center justify-between px-5 pt-4 pb-3">
-          <h2 className="text-lg font-bold">{phase === 'preview' ? 'Preview' : 'Take a photo'}</h2>
+          <h2 className="text-lg font-bold">{phase === 'preview' ? 'Preview' : mode === 'video' ? 'Record a video' : 'Take a photo'}</h2>
           <button type="button" className="icon-btn neu-sm h-9 w-9" onClick={close} aria-label="Close camera">
             <X size={18} />
           </button>
@@ -239,12 +366,26 @@ export default function CameraCaptureModal({ open, onClose, conversationId, repl
               <CameraOff size={36} className="text-accent" />
               <div className="font-semibold">{error?.title}</div>
               <p className="text-sm text-white/70">{error?.message}</p>
-              <button type="button" className="btn bg-white/10 text-white hover:bg-white/20" onClick={() => startStream(facing)}>
+              <button type="button" className="btn bg-white/10 text-white hover:bg-white/20" onClick={() => startStream(facing, mode === 'video')}>
                 <RefreshCw size={16} /> Try again
               </button>
             </div>
           )}
-          {phase === 'preview' && shot && <img src={shot.url} alt="Captured" className="relative h-full w-full object-contain" />}
+          {phase === 'preview' && shot?.kind === 'image' && <img src={shot.url} alt="Captured" className="relative h-full w-full object-contain" />}
+          {phase === 'preview' && shot?.kind === 'video' && (
+            <video src={shot.url} controls autoPlay loop playsInline className="relative h-full w-full object-contain" data-testid="video-preview" />
+          )}
+          {recording && (
+            <div className="absolute top-3 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full bg-black/60 px-3 py-1 text-sm font-semibold text-white" role="timer">
+              <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-red-500" />
+              {formatDuration(elapsed)} / {formatDuration(MAX_VIDEO_SECONDS)}
+            </div>
+          )}
+          {recording && (
+            <div className="absolute inset-x-0 bottom-0 h-1 bg-white/20">
+              <div className="h-full bg-red-500 transition-[width] duration-200 ease-linear" style={{ width: `${Math.min(100, (elapsed / MAX_VIDEO_SECONDS) * 100)}%` }} />
+            </div>
+          )}
           {uploading && (
             <div className="absolute inset-x-0 bottom-0 h-1.5 bg-white/20">
               <div className="h-full bg-accent transition-all" style={{ width: `${progress}%` }} />
@@ -274,38 +415,79 @@ export default function CameraCaptureModal({ open, onClose, conversationId, repl
                 <button type="button" className="btn-ghost" onClick={retake} disabled={uploading}>
                   <RotateCcw size={16} /> Retake
                 </button>
-                <button type="button" className="btn-primary min-w-28" onClick={send} disabled={uploading}>
+                <button type="button" className="btn-primary min-w-28" onClick={send} disabled={uploading} aria-label={shot?.kind === 'video' ? 'Send video' : undefined}>
                   {uploading ? `Uploading ${progress}%` : uploadError ? 'Retry' : 'Send'} <Send size={16} />
                 </button>
               </div>
             </>
           ) : (
-            <div className="flex items-center justify-between">
-              <button type="button" className="icon-btn neu-sm h-12 w-12" onClick={() => fileInputRef.current?.click()} aria-label="Choose from device" title="Choose from device">
-                <ImagePlus size={20} />
-              </button>
-              <button
-                type="button"
-                className="neu-accent flex h-16 w-16 items-center justify-center rounded-full transition active:scale-95 disabled:opacity-40"
-                onClick={capture}
-                disabled={phase !== 'live'}
-                aria-label="Capture photo"
-              >
-                <Camera size={26} />
-              </button>
-              <button
-                type="button"
-                className="icon-btn neu-sm h-12 w-12"
-                onClick={switchCamera}
-                disabled={!canSwitch || phase !== 'live'}
-                aria-label="Switch camera"
-                title="Switch camera"
-              >
-                <SwitchCamera size={20} />
-              </button>
-            </div>
+            <>
+              <div className="flex justify-center">
+                <div className="neu-inset flex rounded-full p-1 text-sm font-semibold" role="tablist" aria-label="Camera mode">
+                  {[
+                    ['photo', 'Photo'],
+                    ['video', 'Video'],
+                  ].map(([value, label]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      role="tab"
+                      aria-selected={mode === value}
+                      disabled={recording}
+                      onClick={() => changeMode(value)}
+                      className={cn('rounded-full px-4 py-1.5 transition', mode === value ? 'bg-accent text-on-accent' : 'text-muted')}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="flex items-center justify-between">
+                <button
+                  type="button"
+                  className="icon-btn neu-sm h-12 w-12"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={recording}
+                  aria-label="Choose from device"
+                  title="Choose from device"
+                >
+                  <ImagePlus size={20} />
+                </button>
+                {mode === 'photo' ? (
+                  <button
+                    type="button"
+                    className="neu-accent flex h-16 w-16 items-center justify-center rounded-full transition active:scale-95 disabled:opacity-40"
+                    onClick={capture}
+                    disabled={phase !== 'live'}
+                    aria-label="Capture photo"
+                  >
+                    <Camera size={26} />
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="flex h-16 w-16 items-center justify-center rounded-full border-4 border-white/80 bg-red-500/90 shadow-lg transition active:scale-95 disabled:opacity-40"
+                    onClick={recording ? () => stopRecorder(false) : startRecording}
+                    disabled={phase !== 'live'}
+                    aria-label={recording ? 'Stop recording' : 'Start recording'}
+                  >
+                    <span className={cn('bg-white transition-all', recording ? 'h-6 w-6 rounded-md' : 'h-0 w-0')} />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="icon-btn neu-sm h-12 w-12"
+                  onClick={switchCamera}
+                  disabled={!canSwitch || phase !== 'live' || recording}
+                  aria-label="Switch camera"
+                  title="Switch camera"
+                >
+                  <SwitchCamera size={20} />
+                </button>
+              </div>
+            </>
           )}
-          <input ref={fileInputRef} type="file" accept={IMAGE_TYPES.join(',')} className="hidden" onChange={pickFile} data-testid="camera-file-input" />
+          <input ref={fileInputRef} type="file" accept={[...IMAGE_TYPES, ...VIDEO_TYPES].join(',')} className="hidden" onChange={pickFile} data-testid="camera-file-input" />
         </div>
       </div>
     </div>,

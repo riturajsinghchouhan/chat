@@ -81,6 +81,8 @@ export function messagePreview(msg, meId) {
   switch (msg.type) {
     case 'image':
       return `${prefix}📷 ${msg.text || 'Photo'}`;
+    case 'video':
+      return `${prefix}🎥 ${msg.text || 'Video'}`;
     case 'gif':
       return `${prefix}GIF`;
     case 'file':

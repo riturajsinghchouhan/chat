@@ -5,7 +5,7 @@ import { formatBytes } from '../lib/utils';
 
 export default function AttachmentPreviewModal({ attachment, onCancel, onSend }) {
   const [caption, setCaption] = useState('');
-  const url = useMemo(() => (attachment?.type === 'image' ? URL.createObjectURL(attachment.file) : null), [attachment]);
+  const url = useMemo(() => (attachment && attachment.type !== 'file' ? URL.createObjectURL(attachment.file) : null), [attachment]);
   useEffect(() => {
     setCaption('');
     return () => {
@@ -22,11 +22,15 @@ export default function AttachmentPreviewModal({ attachment, onCancel, onSend })
   };
 
   return (
-    <Modal open onClose={onCancel} title={type === 'image' ? 'Send photo' : 'Send file'}>
+    <Modal open onClose={onCancel} title={type === 'image' ? 'Send photo' : type === 'video' ? 'Send video' : 'Send file'}>
       <form onSubmit={submit} className="space-y-4 px-5 pb-5">
         {type === 'image' ? (
           <div className="flex max-h-[50vh] justify-center overflow-hidden rounded-2xl bg-sunken">
             <img src={url} alt={file.name} className="max-h-[50vh] object-contain" />
+          </div>
+        ) : type === 'video' ? (
+          <div className="flex max-h-[50vh] justify-center overflow-hidden rounded-2xl bg-black">
+            <video src={url} controls playsInline className="max-h-[50vh] w-full object-contain" />
           </div>
         ) : (
           <div className="neu-inset flex items-center gap-3 rounded-2xl p-4">

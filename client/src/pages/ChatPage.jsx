@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { MessageSquareOff, Pin, X } from 'lucide-react';
+import { MessageSquareOff, Pin, Trash2, X } from 'lucide-react';
 import { useChat } from '../store/chatStore';
 import { useAuth } from '../store/authStore';
 import { useUI } from '../store/uiStore';
@@ -9,6 +9,7 @@ import ChatHeader from '../components/ChatHeader';
 import MessageList from '../components/MessageList';
 import MessageComposer from '../components/MessageComposer';
 import ConversationInfoPanel from '../components/ConversationInfoPanel';
+import DeleteMessagesDialog from '../components/DeleteMessagesDialog';
 import EmptyState from '../components/EmptyState';
 import { MessageSkeleton } from '../components/LoadingSkeleton';
 
@@ -37,10 +38,57 @@ function PinnedBar({ conversation }) {
   );
 }
 
+const EMPTY = [];
+
+function SelectionBar({ count, onCancel, onDelete }) {
+  return (
+    <header className="flex items-center gap-3 border-b border-line px-3 py-3 sm:px-5">
+      <button type="button" className="icon-btn neu-sm" onClick={onCancel} aria-label="Cancel selection">
+        <X size={18} />
+      </button>
+      <div className="min-w-0 flex-1 py-2.5 font-bold" aria-live="polite">
+        {count} selected
+      </div>
+      <button type="button" className="icon-btn neu-sm text-accent" onClick={onDelete} disabled={!count} aria-label="Delete selected messages" title="Delete">
+        <Trash2 size={18} />
+      </button>
+    </header>
+  );
+}
+
 function Conversation({ conversation, me }) {
   const [replyTo, setReplyTo] = useState(null);
   const [editing, setEditing] = useState(null);
   const [panel, setPanel] = useState(null); // null | 'info' | 'search'
+  const [selection, setSelection] = useState(null); // Set of message ids while selecting
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const items = useChat((s) => s.threads[conversation._id]?.items || EMPTY);
+
+  const toggleSelect = useCallback((id) => {
+    setSelection((prev) => {
+      const next = new Set(prev || []);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next.size ? next : null;
+    });
+  }, []);
+  const clearSelection = useCallback(() => {
+    setSelection(null);
+    setConfirmDelete(false);
+  }, []);
+
+  // Only messages still in the thread (others may have been deleted meanwhile).
+  const selectedMessages = useMemo(() => (selection ? items.filter((m) => selection.has(m._id)) : EMPTY), [items, selection]);
+  useEffect(() => {
+    if (selection && !selectedMessages.length && !confirmDelete) setSelection(null);
+  }, [selection, selectedMessages.length, confirmDelete]);
+
+  useEffect(() => {
+    if (!selection) return undefined;
+    const onKey = (e) => e.key === 'Escape' && !confirmDelete && clearSelection();
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [selection, confirmDelete, clearSelection]);
 
   useEffect(() => {
     const chat = useChat.getState();
@@ -61,7 +109,11 @@ function Conversation({ conversation, me }) {
   return (
     <div className="flex h-full w-full">
       <section className="flex h-full min-w-0 flex-1 flex-col bg-base">
-        <ChatHeader conversation={conversation} onOpenInfo={() => setPanel((p) => (p === 'info' ? null : 'info'))} onOpenSearch={() => setPanel('search')} />
+        {selection ? (
+          <SelectionBar count={selectedMessages.length} onCancel={clearSelection} onDelete={() => setConfirmDelete(true)} />
+        ) : (
+          <ChatHeader conversation={conversation} onOpenInfo={() => setPanel((p) => (p === 'info' ? null : 'info'))} onOpenSearch={() => setPanel('search')} />
+        )}
         <PinnedBar conversation={conversation} />
         <MessageList
           conversation={conversation}
@@ -74,6 +126,8 @@ function Conversation({ conversation, me }) {
             setReplyTo(null);
             setEditing(m);
           }}
+          selection={selection}
+          onToggleSelect={toggleSelect}
         />
         <MessageComposer
           conversationId={conversation._id}
@@ -84,6 +138,14 @@ function Conversation({ conversation, me }) {
           disabledReason={disabledReason}
         />
       </section>
+      <DeleteMessagesDialog
+        open={confirmDelete}
+        conversationId={conversation._id}
+        messages={selectedMessages}
+        meId={me._id}
+        onClose={() => setConfirmDelete(false)}
+        onDeleted={clearSelection}
+      />
       {panel && (
         <>
           <div className="fixed inset-0 z-40 bg-[var(--overlay)] xl:hidden" onClick={() => setPanel(null)} aria-hidden="true" />

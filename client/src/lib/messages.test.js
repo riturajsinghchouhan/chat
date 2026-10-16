@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyDelivered, applyRead, mergeMessages } from './messages';
+import { applyDelivered, applyRead, canDeleteForEveryone, isSelectable, mergeMessages } from './messages';
 
 const me = { _id: 'me' };
 const t = (s) => new Date(Date.UTC(2026, 0, 1, 0, 0, s)).toISOString();
@@ -63,5 +63,24 @@ describe('receipts', () => {
   it('does not touch messages still sending or failed', () => {
     const out = applyRead([mine('a', 1, 'failed')], { meId: 'me', readerId: 'bob', readAt: t(5), isGroup: false, memberCount: 2 });
     expect(out[0].status).toBe('failed');
+  });
+});
+
+describe('message deletion helpers', () => {
+  const now = Date.UTC(2026, 0, 1, 12, 0, 0);
+  const at = (minutesAgo) => new Date(now - minutesAgo * 60000).toISOString();
+
+  it('allows delete-for-everyone only for own, recent, persisted messages', () => {
+    expect(canDeleteForEveryone({ senderId: me, type: 'text', status: 'sent', createdAt: at(5) }, 'me', now)).toBe(true);
+    expect(canDeleteForEveryone({ senderId: { _id: 'other' }, type: 'text', status: 'sent', createdAt: at(5) }, 'me', now)).toBe(false);
+    expect(canDeleteForEveryone({ senderId: me, type: 'text', status: 'sent', createdAt: at(61) }, 'me', now)).toBe(false);
+    expect(canDeleteForEveryone({ senderId: me, type: 'text', status: 'sending', createdAt: at(0) }, 'me', now)).toBe(false);
+    expect(canDeleteForEveryone({ senderId: me, type: 'video', status: 'read', createdAt: at(1), deletedAt: at(0) }, 'me', now)).toBe(false);
+  });
+
+  it('only lets persisted, non-system messages be selected', () => {
+    expect(isSelectable({ type: 'video', status: 'delivered' })).toBe(true);
+    expect(isSelectable({ type: 'system', status: 'sent' })).toBe(false);
+    expect(isSelectable({ type: 'text', status: 'failed' })).toBe(false);
   });
 });

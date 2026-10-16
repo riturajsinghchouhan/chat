@@ -3,14 +3,15 @@ import { AlertCircle, Ban, Check, CheckCheck, ChevronDown, Clock, Download, File
 import toast from 'react-hot-toast';
 import { api, getErrorMessage } from '../lib/api';
 import { cn, formatBytes, formatTime, idOf } from '../lib/utils';
+import { canDeleteForEveryone, isSelectable } from '../lib/messages';
 import { useChat } from '../store/chatStore';
 import { useUI } from '../store/uiStore';
 import { downloadMedia } from '../hooks/useMediaUrl';
 import MediaImage from './MediaImage';
+import VideoMessage from './VideoMessage';
 import UserAvatar from './UserAvatar';
 import MessageActionsMenu from './MessageActionsMenu';
 
-const DELETE_WINDOW_MS = 60 * 60 * 1000;
 const URL_RE = /(https?:\/\/[^\s<]+[^\s<.,:;"')\]!?])/g;
 
 function Linkified({ text }) {
@@ -40,7 +41,9 @@ function ReplyQuote({ reply, mine, onJump }) {
     ? 'Deleted message'
     : reply.type === 'image'
       ? `📷 ${reply.text || 'Photo'}`
-      : reply.type === 'gif'
+      : reply.type === 'video'
+        ? `🎥 ${reply.text || 'Video'}`
+        : reply.type === 'gif'
         ? 'GIF'
         : reply.type === 'file'
           ? `📄 ${reply.fileName || 'File'}`
@@ -57,7 +60,23 @@ function ReplyQuote({ reply, mine, onJump }) {
   );
 }
 
-function MessageBubble({ message, meId, mine, isGroup, showSender, showAvatar, conversation, onReply, onEdit, onJump, highlighted, galleryItems }) {
+function MessageBubble({
+  message,
+  meId,
+  mine,
+  isGroup,
+  showSender,
+  showAvatar,
+  conversation,
+  onReply,
+  onEdit,
+  onJump,
+  highlighted,
+  galleryItems,
+  selectMode,
+  selected,
+  onToggleSelect,
+}) {
   const [menuAnchor, setMenuAnchor] = useState(null);
   const bubbleRef = useRef(null);
   const pressTimer = useRef(null);
@@ -66,8 +85,10 @@ function MessageBubble({ message, meId, mine, isGroup, showSender, showAvatar, c
   const pending = message.status === 'sending' || message.status === 'failed';
   const pinned = conversation?.pinnedMessages?.some((p) => idOf(p) === message._id);
 
+  const selectable = isSelectable(message);
+
   const openMenu = (anchor) => {
-    if (!pending) setMenuAnchor(anchor || bubbleRef.current);
+    if (!pending && !selectMode) setMenuAnchor(anchor || bubbleRef.current);
   };
 
   const replaceFromServer = (msg) => useChat.getState().upsertMessages(convId, [msg]);
@@ -108,7 +129,8 @@ function MessageBubble({ message, meId, mine, isGroup, showSender, showAvatar, c
             }
           }
         : null,
-    edit: mine && !deleted && !pending && ['text', 'image', 'file'].includes(message.type) ? () => onEdit(message) : null,
+    edit: mine && !deleted && !pending && ['text', 'image', 'file', 'video'].includes(message.type) ? () => onEdit(message) : null,
+    select: selectable && onToggleSelect ? () => onToggleSelect(message._id) : null,
     deleteMe: !pending
       ? async () => {
           try {
@@ -120,7 +142,7 @@ function MessageBubble({ message, meId, mine, isGroup, showSender, showAvatar, c
         }
       : null,
     deleteAll:
-      mine && !deleted && !pending && Date.now() - new Date(message.createdAt).getTime() < DELETE_WINDOW_MS
+      canDeleteForEveryone(message, meId)
         ? async () => {
             const ok = await useUI.getState().confirm({
               title: 'Delete for everyone?',
@@ -154,14 +176,45 @@ function MessageBubble({ message, meId, mine, isGroup, showSender, showAvatar, c
     if (message.mediaUrl) useUI.getState().openLightbox(items, idx);
   };
 
-  const isMedia = !deleted && (message.type === 'image' || message.type === 'gif');
+  const isMedia = !deleted && (message.type === 'image' || message.type === 'gif' || message.type === 'video');
   const maxW = message.width && message.height && message.height > message.width ? 240 : 320;
 
   return (
     <div
       id={`msg-${message._id}`}
-      className={cn('group flex items-end gap-2', mine ? 'justify-end' : 'justify-start', showSender ? 'mt-3' : 'mt-1')}
+      className={cn(
+        'group relative flex items-end gap-2 rounded-2xl transition-colors',
+        mine ? 'justify-end' : 'justify-start',
+        showSender ? 'mt-3' : 'mt-1',
+        selectMode && '-mx-2 px-2 py-0.5',
+        selected && 'bg-accent-soft/60',
+      )}
     >
+      {selectMode && (
+        // Covers the whole row so taps select instead of opening media, links or menus.
+        <button
+          type="button"
+          role="checkbox"
+          aria-checked={Boolean(selected)}
+          aria-label={selected ? 'Deselect message' : 'Select message'}
+          disabled={!selectable}
+          onClick={() => onToggleSelect(message._id)}
+          className="absolute inset-0 z-20 cursor-pointer rounded-2xl disabled:cursor-default"
+        />
+      )}
+      {selectMode && (
+        <span
+          aria-hidden="true"
+          className={cn(
+            mine && 'mr-auto',
+            'flex h-5 w-5 shrink-0 items-center justify-center self-center rounded-full border-2 transition',
+            selected ? 'border-accent bg-accent text-white' : 'border-muted/60',
+            !selectable && 'opacity-0',
+          )}
+        >
+          {selected && <Check size={13} strokeWidth={3} />}
+        </span>
+      )}
       {!mine && isGroup && (
         <div className="w-8 shrink-0">{showAvatar && <UserAvatar src={message.senderId?.avatar} name={message.senderId?.name || '?'} size="xs" ring={false} />}</div>
       )}
@@ -213,6 +266,8 @@ function MessageBubble({ message, meId, mine, isGroup, showSender, showAvatar, c
                 <div className="absolute inset-0 flex items-center justify-center rounded-xl bg-black/40 text-sm font-semibold text-white">{message.uploadProgress}%</div>
               )}
             </div>
+          ) : message.type === 'video' ? (
+            <VideoMessage message={message} pending={pending} maxW={maxW} />
           ) : message.type === 'gif' ? (
             <div className="relative">
               <img
@@ -265,7 +320,7 @@ function MessageBubble({ message, meId, mine, isGroup, showSender, showAvatar, c
             {mine && !deleted && <StatusIcon status={message.status} />}
           </div>
 
-          {!pending && (
+          {!pending && !selectMode && (
             <button
               type="button"
               aria-label="Message actions"
