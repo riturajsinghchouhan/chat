@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Archive, ArrowLeft, BellOff, Bell, Ban, Images, Info, LogOut, MoreVertical, Pin, PinOff, Search } from 'lucide-react';
+import { Archive, ArrowLeft, BellOff, Bell, Ban, Images, Info, LogOut, MoreVertical, Palette, Pin, PinOff, Search } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { api, getErrorMessage } from '../lib/api';
 import { conversationDisplay, formatLastSeen, idOf } from '../lib/utils';
@@ -16,7 +16,7 @@ export function usePresence(user) {
   return live || { isOnline: user.isOnline, lastSeen: user.lastSeen };
 }
 
-export default function ChatHeader({ conversation, onOpenInfo, onOpenSearch }) {
+export default function ChatHeader({ conversation, onOpenInfo, onOpenSearch, onOpenWallpaper }) {
   const navigate = useNavigate();
   const me = useAuth((s) => s.user);
   const typingMap = useChat((s) => s.typing[conversation._id]);
@@ -127,6 +127,7 @@ export default function ChatHeader({ conversation, onOpenInfo, onOpenSearch }) {
             {item(Search, 'Search messages', onOpenSearch)}
             {item(Info, isGroup ? 'Group info' : 'Contact info', onOpenInfo)}
             {item(Images, 'Shared media', () => navigate(`/c/${conversation._id}/media`))}
+            {onOpenWallpaper && item(Palette, 'Wallpaper', onOpenWallpaper)}
             {item(conversation.me?.muted ? Bell : BellOff, conversation.me?.muted ? 'Unmute' : 'Mute notifications', () => prefs({ muted: !conversation.me?.muted }))}
             {item(conversation.me?.pinned ? PinOff : Pin, conversation.me?.pinned ? 'Unpin chat' : 'Pin chat', () => prefs({ pinned: !conversation.me?.pinned }))}
             {item(Archive, conversation.me?.archived ? 'Unarchive' : 'Archive', () => prefs({ archived: !conversation.me?.archived }))}
