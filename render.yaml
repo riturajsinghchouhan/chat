@@ -1,0 +1,41 @@
+# Render Blueprint for the API + Socket.IO server.
+# Secrets marked `sync: false` are entered in the Render dashboard, never committed.
+services:
+  - type: web
+    name: pulse-chat-api
+    runtime: node
+    rootDir: server
+    plan: starter
+    buildCommand: npm ci --omit=dev && npm run db:init
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: 22
+      - key: MONGODB_URI
+        sync: false
+      - key: JWT_ACCESS_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: CLIENT_URL
+        sync: false # e.g. https://your-app.vercel.app
+      - key: COOKIE_SAMESITE
+        value: none
+      - key: TRUST_PROXY
+        value: 1
+      - key: GIPHY_API_KEY
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: 587
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: MAIL_FROM
+        sync: false
