@@ -162,3 +162,5 @@ Errors always look like `{ "error": { "code": "...", "message": "..." } }`.
 - Voice/video calls (no call buttons are shown)
 - End-to-end encryption
 - Push notifications when the browser is closed (desktop notifications work while a tab is open)
+#   c h a t  
+ 
