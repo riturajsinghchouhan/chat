@@ -7,8 +7,9 @@ import { Notification } from '../models/Notification.js';
 import { AppError, badRequest, conflict, notFound } from '../utils/AppError.js';
 import { escapeRegex, objectId } from '../utils/validate.js';
 import { usernameSchema } from './authController.js';
-import { deleteFile, detectFile, idFromMediaUrl, mediaUrl, processAvatar, saveBuffer } from '../services/storage.js';
+import { deleteFile, deleteFilesOwnedBy, detectFile, idFromMediaUrl, mediaUrl, processAvatar, saveBuffer } from '../services/storage.js';
 import { contactIdsOf } from '../services/conversationService.js';
+import { releaseWallpaperImage, resolveWallpaper, saveWallpaperImage, wallpaperInput } from '../services/wallpaperService.js';
 import { disconnectUser, emitToUsers } from '../socket/io.js';
 import { REFRESH_COOKIE, refreshCookieOptions } from '../utils/tokens.js';
 import { logger } from '../utils/logger.js';
@@ -28,6 +29,7 @@ export const schemas = {
       notifications: z.boolean().optional(),
       sound: z.boolean().optional(),
       messagePreview: z.boolean().optional(),
+      wallpaper: wallpaperInput.optional(),
     })
     .refine((v) => Object.keys(v).length > 0, 'Nothing to update'),
   deleteAccount: z.object({ password: z.string().min(1).max(128) }),
@@ -95,9 +97,22 @@ export async function updateProfile(req, res) {
 }
 
 export async function updateSettings(req, res) {
-  const set = Object.fromEntries(Object.entries(req.body).map(([k, v]) => [`settings.${k}`, v]));
+  const body = { ...req.body };
+  let previousImage = null;
+  if ('wallpaper' in body) {
+    body.wallpaper = await resolveWallpaper(req.user.id, body.wallpaper);
+    previousImage = (await User.findById(req.user.id).select('settings.wallpaper').lean())?.settings?.wallpaper?.mediaId;
+  }
+  const set = Object.fromEntries(Object.entries(body).map(([k, v]) => [`settings.${k}`, v]));
   const user = await User.findByIdAndUpdate(req.user.id, { $set: set }, { returnDocument: 'after' });
+  if (previousImage && String(previousImage) !== String(body.wallpaper?.mediaId)) await releaseWallpaperImage(req.user.id, previousImage);
+  // Sync the user's other tabs/devices.
+  emitToUsers([req.user.id], 'user:updated', { user: { _id: user._id, settings: user.settings } });
   res.json({ user });
+}
+
+export async function uploadWallpaper(req, res) {
+  res.status(201).json({ media: await saveWallpaperImage(req.user.id, req.file) });
 }
 
 export async function uploadAvatar(req, res) {
@@ -177,6 +192,7 @@ export async function deleteAccount(req, res) {
     Notification.deleteMany({ user: user._id }),
     User.updateMany({ blockedUsers: user._id }, { $pull: { blockedUsers: user._id } }),
     deleteFile(idFromMediaUrl(user.avatar)),
+    deleteFilesOwnedBy(user._id, 'wallpaper'),
   ]);
   const contacts = await contactIdsOf(user._id);
   await user.deleteOne();

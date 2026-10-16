@@ -2,8 +2,6 @@
 node_modules/
 
 # Environment files (never commit real secrets)
-.env
-.env.*
 !.env.example
 
 # Builds
@@ -20,8 +18,11 @@ npm-debug.log*
 # OS / editor
 .DS_Store
 Thumbs.db
-.vscode/
 .idea/
 
 # Vercel
 .vercel
+branch_structure.json
+temp_auto_push.bat
+temp_interactive_push.bat
+config.bat

@@ -44,6 +44,7 @@ u.patch('/profile', validate({ body: users.schemas.profile }), users.updateProfi
 u.patch('/settings', validate({ body: users.schemas.settings }), users.updateSettings);
 u.post('/avatar', uploadLimiter, uploadSingle('avatar', 5), users.uploadAvatar);
 u.delete('/avatar', users.removeAvatar);
+u.post('/wallpaper', uploadLimiter, uploadSingle('wallpaper', 10), users.uploadWallpaper);
 u.delete('/me', authLimiter, validate({ body: users.schemas.deleteAccount }), users.deleteAccount);
 u.get('/:userId', validate({ params: users.schemas.userIdParam }), users.getUser);
 u.post('/:userId/block', validate({ params: users.schemas.userIdParam }), users.blockUser);

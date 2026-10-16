@@ -10,13 +10,19 @@ import {
   serializeConversation,
 } from '../services/conversationService.js';
 import { emitToUsers } from '../socket/io.js';
+import { releaseWallpaperImage, resolveWallpaper, wallpaperInput } from '../services/wallpaperService.js';
 import { logger } from '../utils/logger.js';
 
 export const schemas = {
   create: z.object({ userId: objectId }),
   idParam: z.object({ conversationId: objectId }),
   prefs: z
-    .object({ pinned: z.boolean().optional(), archived: z.boolean().optional(), muted: z.boolean().optional() })
+    .object({
+      pinned: z.boolean().optional(),
+      archived: z.boolean().optional(),
+      muted: z.boolean().optional(),
+      wallpaper: wallpaperInput.optional(), // null = back to the default wallpaper
+    })
     .refine((v) => Object.keys(v).length > 0, 'Nothing to update'),
   media: z.object({
     type: z.enum(['image', 'file', 'gif', 'video', 'all']).default('all'),
@@ -85,13 +91,21 @@ export async function getConversation(req, res) {
 }
 
 export async function updatePrefs(req, res) {
-  const set = Object.fromEntries(Object.entries(req.body).map(([k, v]) => [`members.$.${k}`, v]));
+  const body = { ...req.body };
+  let previousImage = null;
+  if ('wallpaper' in body) {
+    const current = await loadConversationForMember(req.params.conversationId, req.user.id, { populate: false });
+    previousImage = current.getMember(req.user.id)?.wallpaper?.mediaId;
+    body.wallpaper = await resolveWallpaper(req.user.id, body.wallpaper);
+  }
+  const set = Object.fromEntries(Object.entries(body).map(([k, v]) => [`members.$.${k}`, v]));
   const conv = await Conversation.findOneAndUpdate(
     { _id: req.params.conversationId, 'members.user': req.user.id },
     { $set: set },
     { returnDocument: 'after' },
   ).populate(CONVERSATION_POPULATE);
   if (!conv) throw notFound('Conversation not found');
+  if (previousImage && String(previousImage) !== String(body.wallpaper?.mediaId)) await releaseWallpaperImage(req.user.id, previousImage);
   const conversation = serializeConversation(conv, req.user.id);
   // Sync the user's other tabs/devices.
   emitToUsers([req.user.id], 'conversation:prefs', { conversationId: String(conv._id), me: conversation.me });

@@ -34,6 +34,10 @@ Per-member state (unread count, pin/archive/mute, last read) lives inside the co
 
 **Bulk delete:** `POST /api/messages/bulk-delete { conversationId, messageIds (≤100), scope: me | everyone }`. "everyone" is all-or-nothing (all must be your own, within the time window); emits `message:hidden { messageIds }` or `messages:updated { messages }`.
 
+**Chat presence ("avatar peek"):** while a chat is open in a visible tab the client emits `chat:view { conversationId }` (`null` when hidden/closed). The server keeps it in `socket.data.viewing` (visible to every instance through `fetchSockets`), tells the other members via `chat:viewing { conversationId, userId, viewing }` (also on disconnect, unless another tab of that user still has the chat open) and acks with the members already viewing. Nothing is shared with non-members or across a block.
+
+**Wallpapers:** private per user. Default in `user.settings.wallpaper`, per-chat override in the member's `wallpaper` (`null` = use the default, `kind: 'none'` = plain). Kinds: `preset` (CSS presets in `client/src/lib/wallpapers.js`), `color`, `image` (uploaded via `POST /api/users/wallpaper`, GridFS kind `wallpaper`, readable only by its owner, deleted once no chat/default uses it).
+
 **Cleanup policy:** expired sessions (TTL index), old notifications (TTL index), unattached uploads older than 24 h, abandoned chunked uploads (sessions idle > 1 h) and expired reset tokens (hourly job). Messages and attached media are never removed by routine cleanup — only by explicit "delete for everyone".
 
 ## Message delivery guarantees
