@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { wallpaperSchema } from './wallpaper.js';
 
 const { Schema } = mongoose;
 
@@ -13,6 +14,7 @@ const memberSchema = new Schema(
     pinned: { type: Boolean, default: false },
     archived: { type: Boolean, default: false },
     muted: { type: Boolean, default: false },
+    wallpaper: { type: wallpaperSchema, default: null }, // null = use the user's default
   },
   { _id: false },
 );

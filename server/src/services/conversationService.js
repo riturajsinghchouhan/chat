@@ -48,6 +48,7 @@ export function serializeConversation(conv, userId = null) {
         pinned: me.pinned,
         archived: me.archived,
         muted: me.muted,
+        wallpaper: me.wallpaper ?? null,
         lastReadAt: me.lastReadAt,
       };
     }

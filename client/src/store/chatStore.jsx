@@ -16,6 +16,9 @@ const pendingUploads = new Map();
 const inflightConversations = new Map();
 const readTimers = new Map();
 const typingTimers = new Map();
+// Last conversation announced via chat:view (undefined = nothing sent on this connection yet).
+let announcedView;
+let visibilityBound = false;
 
 const emptyThread = { items: [], hasMore: true, loading: false, loaded: false, error: null };
 
@@ -42,6 +45,7 @@ export const useChat = create((set, get) => ({
   activeId: null,
   typing: {}, // convId -> { userId: true }
   presence: {}, // userId -> { isOnline, lastSeen }
+  viewers: {}, // convId -> { userId: true } — who else has the chat open right now
   notifications: [],
   unreadNotifications: 0,
   connection: 'connecting', // connecting | online | offline
@@ -55,9 +59,11 @@ export const useChat = create((set, get) => ({
       activeId: null,
       typing: {},
       presence: {},
+      viewers: {},
       notifications: [],
       unreadNotifications: 0,
     });
+    announcedView = undefined;
   },
 
   setConnection: (connection) => set({ connection }),
@@ -138,6 +144,34 @@ export const useChat = create((set, get) => ({
   setActive(id) {
     set({ activeId: id });
     if (id) get().markRead(id);
+    get().announceView();
+  },
+
+  setViewing(convId, userId, viewing) {
+    set((s) => {
+      const current = { ...(s.viewers[convId] || {}) };
+      if (viewing) current[userId] = true;
+      else delete current[userId];
+      return { viewers: { ...s.viewers, [convId]: current } };
+    });
+  },
+
+  /** Tells the other members which chat we are looking at (only while the tab is visible). */
+  announceView() {
+    const socket = getSocket();
+    if (!socket?.connected) return;
+    const visible = typeof document === 'undefined' || document.visibilityState === 'visible';
+    const conversationId = visible ? get().activeId : null;
+    if (conversationId === announcedView) return;
+    announcedView = conversationId;
+    emitAck('chat:view', { conversationId })
+      .then(({ viewers }) => {
+        if (!conversationId) return;
+        set((s) => ({ viewers: { ...s.viewers, [conversationId]: Object.fromEntries(viewers.map((id) => [id, true])) } }));
+      })
+      .catch(() => {
+        if (announcedView === conversationId) announcedView = undefined; // retry on the next change
+      });
   },
 
   // ---------------- Messages ----------------
@@ -396,8 +430,15 @@ export const useChat = create((set, get) => ({
     const s = get;
     let lostConnection = false;
 
+    if (!visibilityBound && typeof document !== 'undefined') {
+      visibilityBound = true;
+      document.addEventListener('visibilitychange', () => get().announceView());
+    }
+
     socket.on('connect', () => {
       set({ connection: 'online' });
+      announcedView = undefined;
+      s().announceView();
       if (lostConnection) {
         lostConnection = false;
         // Resync anything missed while disconnected.
@@ -414,7 +455,8 @@ export const useChat = create((set, get) => ({
     });
     socket.on('disconnect', () => {
       lostConnection = true;
-      set({ connection: 'offline' });
+      announcedView = undefined;
+      set({ connection: 'offline', viewers: {} });
     });
     socket.io.on('reconnect_attempt', () => set({ connection: 'connecting' }));
 
@@ -470,11 +512,22 @@ export const useChat = create((set, get) => ({
       s().upsertConversation({ ...conv, members, lastMessage: last });
     });
 
+    socket.on('chat:viewing', ({ conversationId, userId, viewing }) => s().setViewing(conversationId, userId, viewing));
+
     socket.on('typing:start', ({ conversationId, userId }) => s().setTyping(conversationId, userId, true));
     socket.on('typing:stop', ({ conversationId, userId }) => s().setTyping(conversationId, userId, false));
 
     socket.on('user:online', ({ userId }) => set((st) => ({ presence: { ...st.presence, [userId]: { isOnline: true, lastSeen: new Date().toISOString() } } })));
-    socket.on('user:offline', ({ userId, lastSeen }) => set((st) => ({ presence: { ...st.presence, [userId]: { isOnline: false, lastSeen } } })));
+    socket.on('user:offline', ({ userId, lastSeen }) =>
+      set((st) => {
+        const viewers = {};
+        for (const [convId, v] of Object.entries(st.viewers)) {
+          const { [userId]: _gone, ...rest } = v;
+          viewers[convId] = rest;
+        }
+        return { presence: { ...st.presence, [userId]: { isOnline: false, lastSeen } }, viewers };
+      }),
+    );
 
     socket.on('user:updated', ({ user }) => {
       if (user._id === meId()) useAuth.getState().patchUser(user);

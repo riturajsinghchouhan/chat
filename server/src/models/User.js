@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { wallpaperSchema } from './wallpaper.js';
 
 const { Schema } = mongoose;
 
@@ -28,6 +29,7 @@ const userSchema = new Schema(
       notifications: { type: Boolean, default: true },
       sound: { type: Boolean, default: true },
       messagePreview: { type: Boolean, default: true },
+      wallpaper: { type: wallpaperSchema, default: null }, // default for all chats
     },
     passwordResetTokenHash: { type: String, select: false },
     passwordResetExpires: { type: Date, select: false },
