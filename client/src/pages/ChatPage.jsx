@@ -10,6 +10,8 @@ import MessageList from '../components/MessageList';
 import MessageComposer from '../components/MessageComposer';
 import ConversationInfoPanel from '../components/ConversationInfoPanel';
 import DeleteMessagesDialog from '../components/DeleteMessagesDialog';
+import WallpaperModal from '../components/WallpaperModal';
+import { effectiveWallpaper } from '../lib/wallpapers';
 import EmptyState from '../components/EmptyState';
 import { MessageSkeleton } from '../components/LoadingSkeleton';
 
@@ -62,6 +64,7 @@ function Conversation({ conversation, me }) {
   const [panel, setPanel] = useState(null); // null | 'info' | 'search'
   const [selection, setSelection] = useState(null); // Set of message ids while selecting
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [wallpaperOpen, setWallpaperOpen] = useState(false);
   const items = useChat((s) => s.threads[conversation._id]?.items || EMPTY);
 
   const toggleSelect = useCallback((id) => {
@@ -112,7 +115,12 @@ function Conversation({ conversation, me }) {
         {selection ? (
           <SelectionBar count={selectedMessages.length} onCancel={clearSelection} onDelete={() => setConfirmDelete(true)} />
         ) : (
-          <ChatHeader conversation={conversation} onOpenInfo={() => setPanel((p) => (p === 'info' ? null : 'info'))} onOpenSearch={() => setPanel('search')} />
+          <ChatHeader
+            conversation={conversation}
+            onOpenInfo={() => setPanel((p) => (p === 'info' ? null : 'info'))}
+            onOpenSearch={() => setPanel('search')}
+            onOpenWallpaper={() => setWallpaperOpen(true)}
+          />
         )}
         <PinnedBar conversation={conversation} />
         <MessageList
@@ -128,6 +136,7 @@ function Conversation({ conversation, me }) {
           }}
           selection={selection}
           onToggleSelect={toggleSelect}
+          wallpaper={effectiveWallpaper(conversation, me)}
         />
         <MessageComposer
           conversationId={conversation._id}
@@ -146,6 +155,7 @@ function Conversation({ conversation, me }) {
         onClose={() => setConfirmDelete(false)}
         onDeleted={clearSelection}
       />
+      <WallpaperModal open={wallpaperOpen} onClose={() => setWallpaperOpen(false)} conversation={conversation} />
       {panel && (
         <>
           <div className="fixed inset-0 z-40 bg-[var(--overlay)] xl:hidden" onClick={() => setPanel(null)} aria-hidden="true" />

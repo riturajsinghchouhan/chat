@@ -184,6 +184,13 @@ export async function deleteFile(id) {
   }
 }
 
+/** Deletes every stored file of one kind owned by a user (e.g. wallpapers on account deletion). */
+export async function deleteFilesOwnedBy(ownerId, kind) {
+  const files = await filesCollection().find({ 'metadata.ownerId': String(ownerId), 'metadata.kind': kind }).project({ _id: 1 }).toArray();
+  for (const f of files) await deleteFile(f._id);
+  return files.length;
+}
+
 export async function markAttached(ids) {
   await filesCollection().updateMany(
     { _id: { $in: ids.map((id) => new ObjectId(id)) } },
@@ -194,7 +201,7 @@ export async function markAttached(ids) {
 /** Removes uploads that were never attached to a message (abandoned previews). */
 export async function deleteUnattachedOlderThan(date) {
   const stale = await filesCollection()
-    .find({ 'metadata.kind': { $in: ['message', 'thumb'] }, 'metadata.attached': false, uploadDate: { $lt: date } })
+    .find({ 'metadata.kind': { $in: ['message', 'thumb', 'wallpaper'] }, 'metadata.attached': false, uploadDate: { $lt: date } })
     .project({ _id: 1 })
     .limit(500)
     .toArray();

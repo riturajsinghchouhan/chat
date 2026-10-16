@@ -199,6 +199,40 @@ body {
   animation: pop-in 0.18s ease-out;
 }
 
+/* Avatar peeking up from the bottom of a chat while that person is viewing it (Snapchat-style) */
+.peek-in {
+  animation: peek-in 0.45s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+@keyframes peek-in {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+.peek-typing {
+  animation: peek-bob 0.9s ease-in-out infinite;
+}
+@keyframes peek-bob {
+  0%,
+  100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  30% {
+    transform: translateY(-5px) rotate(-4deg);
+  }
+  60% {
+    transform: translateY(-2px) rotate(3deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .peek-in,
+  .peek-typing {
+    animation: none;
+  }
+}
+
 .highlight-flash {
   animation: flash 1.6s ease-out;
 }

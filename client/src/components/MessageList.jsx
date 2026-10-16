@@ -2,18 +2,19 @@ import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, use
 import { ArrowDown, MessagesSquare } from 'lucide-react';
 import { useChat } from '../store/chatStore';
 import { useUI } from '../store/uiStore';
-import { formatDayLabel, idOf, isSameDay } from '../lib/utils';
+import { cn, formatDayLabel, idOf, isSameDay } from '../lib/utils';
 import MessageBubble from './MessageBubble';
-import TypingIndicator from './TypingIndicator';
+import ChatPresence, { useChatPresence } from './ChatPresence';
+import ChatWallpaper from './ChatWallpaper';
 import { MessageSkeleton, Spinner } from './LoadingSkeleton';
 import EmptyState from './EmptyState';
 
 const EMPTY = [];
 
-export default function MessageList({ conversation, meId, onReply, onEdit, selection, onToggleSelect }) {
+export default function MessageList({ conversation, meId, onReply, onEdit, selection, onToggleSelect, wallpaper }) {
   const convId = conversation._id;
   const thread = useChat((s) => s.threads[convId]);
-  const typingMap = useChat((s) => s.typing[convId]);
+  const present = useChatPresence(conversation, meId);
   const jumpTo = useUI((s) => s.jumpTo);
   const containerRef = useRef(null);
   const anchorRef = useRef(null); // preserves position while older messages are prepended
@@ -123,15 +124,20 @@ export default function MessageList({ conversation, meId, onReply, onEdit, selec
     if (jumpTo?.conversationId === convId && thread?.loaded) jump(jumpTo.messageId);
   }, [jumpTo, convId, thread?.loaded, jump]);
 
-  const typingUsers = Object.keys(typingMap || {}).filter((id) => id !== meId);
-  const typingLabel = isGroup && typingUsers.length
-    ? `${typingUsers
-        .map((id) => conversation.members.find((m) => idOf(m.user) === id)?.user?.name?.split(' ')[0])
-        .filter(Boolean)
-        .join(', ')} typing…`
-    : null;
+  // Keep the newest message visible when an avatar starts peeking over it.
+  const peeking = present.length > 0;
+  useLayoutEffect(() => {
+    if (peeking && stickRef.current && initialScrollDone.current) scrollToBottom(true);
+  }, [peeking, scrollToBottom]);
 
-  if (!thread || (!thread.loaded && thread.loading) || (!thread.loaded && !thread.error)) return <div className="flex-1"><MessageSkeleton /></div>;
+  if (!thread || (!thread.loaded && thread.loading) || (!thread.loaded && !thread.error)) {
+    return (
+      <div className="relative flex-1">
+        <ChatWallpaper wallpaper={wallpaper} />
+        <MessageSkeleton />
+      </div>
+    );
+  }
   if (thread.error && !thread.loaded) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 text-sm text-muted">
@@ -145,7 +151,13 @@ export default function MessageList({ conversation, meId, onReply, onEdit, selec
 
   return (
     <div className="relative min-h-0 flex-1">
-      <div ref={containerRef} onScroll={onScroll} className="scroll-thin h-full overflow-x-hidden overflow-y-auto px-3 py-4 sm:px-6" data-testid="message-list">
+      <ChatWallpaper wallpaper={wallpaper} />
+      <div
+        ref={containerRef}
+        onScroll={onScroll}
+        className={cn('scroll-thin relative h-full overflow-x-hidden overflow-y-auto px-3 pt-4 transition-[padding] sm:px-6', peeking ? 'pb-12' : 'pb-4')}
+        data-testid="message-list"
+      >
         {thread.loading && thread.loaded && (
           <div className="flex justify-center py-2 text-accent">
             <Spinner />
@@ -202,12 +214,9 @@ export default function MessageList({ conversation, meId, onReply, onEdit, selec
             </Fragment>
           );
         })}
-        {typingUsers.length > 0 && (
-          <div className="mt-2">
-            <TypingIndicator label={typingLabel} />
-          </div>
-        )}
       </div>
+
+      <ChatPresence people={present} />
 
       {newCount > 0 && (
         <button type="button" onClick={() => scrollToBottom(true)} className="neu-accent animate-pop absolute right-5 bottom-4 flex items-center gap-1.5 rounded-full px-3 py-2 text-xs font-semibold">

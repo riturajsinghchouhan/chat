@@ -18,6 +18,8 @@ import {
 import { emitToUsers, setIO, userRoom } from './io.js';
 
 const convPayload = z.object({ conversationId: objectId });
+// null = not looking at any chat (closed it, switched tab, minimized)
+const viewPayload = z.object({ conversationId: objectId.nullable() });
 const deliveredPayload = z.object({ messageIds: z.array(objectId).min(1).max(500) });
 const tokenPayload = z.object({ token: z.string().min(10).max(2000) });
 
@@ -98,6 +100,7 @@ async function handleConnection(io, socket) {
     typing: limiter(30, 5000),
     read: limiter(40, 10000),
     delivered: limiter(60, 10000),
+    view: limiter(40, 10000),
   };
   // Small per-socket cache of conversation membership for high-frequency typing events.
   const membership = new Map();
@@ -192,8 +195,47 @@ async function handleConnection(io, socket) {
     });
   }
 
+  // ---- "Who is looking at this chat" (avatar peek at the bottom of the chat) ----
+  // socket.data.viewing is readable from every instance via fetchSockets (Redis adapter).
+
+  /** True if another tab/device of this user is still viewing the conversation. */
+  async function stillViewingElsewhere(conversationId) {
+    const mine = await io.in(userRoom(userId)).fetchSockets();
+    return mine.some((s) => s.id !== socket.id && s.data.viewing === conversationId);
+  }
+
+  async function announceViewing(conversationId, viewing) {
+    const ids = await memberIdsFor(conversationId);
+    if (!ids) return;
+    if (!viewing && (await stillViewingElsewhere(conversationId))) return;
+    emitToUsers(
+      ids.filter((id) => id !== userId),
+      'chat:viewing',
+      { conversationId, userId, viewing },
+    );
+  }
+
+  on('chat:view', limits.view, async (payload) => {
+    const { conversationId } = parsePayload(viewPayload, payload);
+    const previous = socket.data.viewing || null;
+    const ids = conversationId ? await memberIdsFor(conversationId) : null;
+    const next = ids ? conversationId : null; // not a member, or blocked → share nothing
+    socket.data.viewing = next;
+    if (previous && previous !== next) await announceViewing(previous, false);
+    if (!next) return { viewers: [] };
+    if (previous !== next) await announceViewing(next, true);
+    // Who of the other members is looking at it right now
+    const others = ids.filter((id) => id !== userId);
+    const sockets = others.length ? await io.in(others.map(userRoom)).fetchSockets() : [];
+    const viewers = [...new Set(sockets.filter((s) => s.data.viewing === next).map((s) => s.data.userId))];
+    return { viewers };
+  });
+
   socket.on('disconnect', async (reason) => {
     logger.info('Socket disconnected', { userId, socketId: socket.id, reason });
+    const viewing = socket.data.viewing;
+    socket.data.viewing = null;
+    if (viewing) announceViewing(viewing, false).catch(() => {});
     try {
       const remaining = await io.in(userRoom(userId)).fetchSockets();
       if (remaining.length > 0) return; // still connected on another tab/device

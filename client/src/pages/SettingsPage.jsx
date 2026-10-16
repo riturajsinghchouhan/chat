@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Ban, Bell, ChevronRight, KeyRound, LogOut, Monitor, Moon, Sun, Trash2, UserRound, Volume2, Eye, ShieldCheck } from 'lucide-react';
+import { Ban, Bell, ChevronRight, KeyRound, LogOut, Monitor, Moon, Palette, Sun, Trash2, UserRound, Volume2, Eye, ShieldCheck } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { api, getErrorMessage, setAccessToken } from '../lib/api';
 import { notificationsSupported, requestNotificationPermission } from '../lib/notify';
@@ -9,6 +9,7 @@ import { useUI } from '../store/uiStore';
 import { cn } from '../lib/utils';
 import UserAvatar from '../components/UserAvatar';
 import Modal from '../components/Modal';
+import WallpaperModal from '../components/WallpaperModal';
 import { Field, passwordProblem } from './AuthLayout';
 import PageShell from './PageShell';
 
@@ -54,6 +55,7 @@ export default function SettingsPage() {
   const theme = useUI((s) => s.theme);
   const setTheme = useUI((s) => s.setTheme);
   const [pwOpen, setPwOpen] = useState(false);
+  const [wallpaperOpen, setWallpaperOpen] = useState(false);
   const [pw, setPw] = useState({ currentPassword: '', newPassword: '' });
   const [busy, setBusy] = useState(false);
   const settings = me.settings || {};
@@ -136,6 +138,9 @@ export default function SettingsPage() {
               </button>
             ))}
           </div>
+          <div className="card mt-3 overflow-hidden">
+            <RowLink icon={Palette} title="Chat wallpaper" onClick={() => setWallpaperOpen(true)} />
+          </div>
         </section>
 
         <section>
@@ -169,6 +174,8 @@ export default function SettingsPage() {
           Messages are protected in transit with HTTPS/WSS and stored on our server. Pulse does not use end-to-end encryption.
         </p>
       </div>
+
+      <WallpaperModal open={wallpaperOpen} onClose={() => setWallpaperOpen(false)} />
 
       <Modal open={pwOpen} onClose={() => setPwOpen(false)} title="Change password">
         <form onSubmit={changePassword} className="space-y-4 px-5 pb-5">
